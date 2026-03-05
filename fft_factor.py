@@ -4,6 +4,7 @@ from matplotlib.patches import FancyBboxPatch
 import matplotlib.gridspec as gridspec
 from scipy.signal import find_peaks
 import time
+from sympy import factorial, fibonacci
 
 # ─────────────────────────────────────────────────────────────
 # PART 1: FFT Integer Multiplication (forward direction)
@@ -31,6 +32,7 @@ def safe_log_array(x, min_val=1e-10):
 
 def build_sharp_signal(N, scale, sigma=1.0):
     """Build signal with sharp spikes at log(k) positions"""
+    N = int(N)
     limit = int(N**0.5) + 1
     log_N = np.log(N)
     size = int(log_N * scale) + 30
@@ -193,7 +195,7 @@ def trial_division(N, limit=None):
 print("=" * 60)
 print("  FFT MULTIPLICATION — the forward direction works perfectly")
 print("=" * 60)
-for a, b in [(3, 5), (59, 61), (97, 103), (9_999_991, 9_999_973)]:
+for a, b in [(3, 5), (7,11), (59, 61), (97, 103), (9_999_991, 9_999_973), (65537,65539)]:
     result = fft_multiply(a, b)
     match = "✓" if result == a * b else "✗"
     print(f"  {a:>12,} × {b:<12,} = {result:>22,}  {match}")
@@ -208,32 +210,47 @@ test_cases = [
     (97, "prime"),
     (10_007, "prime (10007)"),
     (65_537, "prime (Fermat)"),
+    (65537*65539, "65537*65539"),
+    (289408787257590,"primorial(13)"),
+    (int(factorial(15)),"factorial(15)"),
+    (2 ** 48 - 1, "2^48-1"),
+    (2 ** 48 + 1, "2^48+1"),
+    (fibonacci(45), "fibonacci(75)")
+
 ]
 
 print("\n" + "=" * 60)
 print("  FFT FACTORIZATION — Enhanced log-domain convolution")
 print("=" * 60)
 
+
 results = []
 for N, label in test_cases:
+    N = int(N)  # coerce SymPy Integer once — fixes formatting, bit_length(), and np calls
+    t0 = time.time()
     factors, sig, conv, tgt, win, peak = fft_factor(N, scale=3000, sigma=1.0, verbose=True)
-    results.append((N, label, factors, sig, conv, tgt, win, peak))
+    t1 = time.time()
+    results.append((N, label, factors, sig, conv, tgt, win, peak, t1-t0))
 
 # ─────────────────────────────────────────────────────────────
 # PART 4: Visualisation (Enhanced)
 # ─────────────────────────────────────────────────────────────
 
-fig = plt.figure(figsize=(17, 15), facecolor="#0d0d1a")
+n_cases = len(results)
+n_cols = 3
+n_rows = (n_cases + n_cols - 1) // n_cols
+
+fig = plt.figure(figsize=(17, 4 * n_rows + 3), facecolor="#0d0d1a")
 fig.suptitle("Enhanced FFT Factorization via Log-Domain Self-Convolution",
              fontsize=17, color="white", fontweight="bold", y=0.98)
 
-gs = gridspec.GridSpec(4, 3, figure=fig, hspace=0.6, wspace=0.35,
+gs = gridspec.GridSpec(n_rows, n_cols, figure=fig, hspace=0.6, wspace=0.35,
                        top=0.92, bottom=0.18)
 
 palette = ["#00d4ff", "#ff6b6b", "#ffd93d", "#6bcb77", "#c77dff", 
            "#ff9f43", "#f0f3f4", "#ff80bf", "#7fffd4"]
 
-for i, (N, label, factors, sig, conv, tgt, win, peak) in enumerate(results):
+for i, (N, label, factors, sig, conv, tgt, win, peak, dt) in enumerate(results):
     ax = fig.add_subplot(gs[i // 3, i % 3])
     ax.set_facecolor("#111128")
     
@@ -266,7 +283,7 @@ for i, (N, label, factors, sig, conv, tgt, win, peak) in enumerate(results):
     
     found_str = f"= {factors[0][0]}×{factors[0][1]}" if factors else "(prime)"
     status = "✓" if factors else "✓ prime" if "prime" in label.lower() else "?"
-    ax.set_title(f"N = {N:,}  [{label}]\npeak={peak:.2f}  {status} {found_str}",
+    ax.set_title(f"N = {N:,}  [{label}]\npeak={peak:.2f} dt={dt:.1f} sec log_2={N.bit_length()} {status} {found_str}",
                  color="white", fontsize=8.5, pad=3)
     ax.tick_params(colors="#666688", labelsize=6.5)
     for sp in ax.spines.values(): sp.set_edgecolor("#223")
@@ -309,7 +326,7 @@ ax_d.text(6, -0.12,
     ha="center", va="center", color="#7777aa", fontsize=8.5, style="italic",
     transform=ax_d.transData)
 
-plt.savefig("/mnt/user-data/outputs/enhanced_fft_factorization.png",
+plt.savefig("enhanced_fft_factorization.png",
             dpi=150, bbox_inches="tight", facecolor="#0d0d1a")
 print("\n  ✓ Enhanced plot saved.")
 
