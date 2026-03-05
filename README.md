@@ -40,6 +40,26 @@ Products of twin/cousin/sexy primes (e.g. 59×61, 97×103) are ideal targets.
 This is also the structure of RSA keys — though RSA key sizes (2048+ bits)
 are far beyond what any classical O(√N) method can reach.
 
+## Why this doesn't compete with Pollard ρ / ECM / NFS
+
+The signal construction loop iterates over every integer in `[2, √N]`, which
+is the *same* work as naive trial division — the FFT convolution is fast, but
+it cannot avoid paying the O(√N) cost upfront just to build the input. State-
+of-the-art algorithms sidestep this entirely:
+
+| Algorithm | Complexity | Avoids O(√N) how? |
+|-----------|------------|-------------------|
+| Pollard ρ | O(N^¼) expected | Random walk in ℤ/Nℤ — finds a factor after O(√p) steps where p is the *smallest* factor, not √N |
+| ECM | O(exp(√(log p · log log p))) | Works in the group of an elliptic curve mod N; cost depends on the *size of the factor p*, not N |
+| GNFS | O(exp((log N)^⅓ · (log log N)^⅔)) | Algebraic sieve — sub-exponential in the *full* bit-size of N |
+
+In short: Pollard ρ and ECM exploit algebraic structure to find small factors
+cheaply without scanning the full range; NFS exploits smooth-number density to
+factor arbitrary N in sub-exponential time. The FFT approach here has no
+equivalent shortcut — it must enumerate all candidates up to √N to build the
+signal, making it fundamentally O(√N) and outclassed by Pollard ρ even for
+20-bit inputs.
+
 ## Requirements
 
 ```
