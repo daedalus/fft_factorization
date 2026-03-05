@@ -60,6 +60,12 @@ equivalent shortcut — it must enumerate all candidates up to √N to build the
 signal, making it fundamentally O(√N) and outclassed by Pollard ρ even for
 20-bit inputs.
 
+
+## Examples
+
+![Example fft_factorization](examples/fft_factorization.png)
+![Runtime analysis](examples/scaling.png)
+
 ## Requirements
 
 ```
