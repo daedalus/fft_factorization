@@ -1,4 +1,14 @@
+"""
+FFT-based factorization using log-domain self-convolution.
+
+Theory: For composite N = p*q, consider spikes at positions log(k) for k in [2, √N].
+The self-convolution of this spike train peaks at log(N) due to pairs (a,b) where
+a*b ≈ N. By analyzing this peak, we can detect compositeness and guide factor search.
+"""
+
+
 import argparse
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
@@ -43,34 +53,154 @@ def safe_log_array(x, min_val=1e-10):
     """Safely compute log with floor."""
     return np.log(np.maximum(x, min_val))
 
-def build_sharp_signal(N, scale, sigma=1.0, verbosity=1):
-    """Build signal with sharp spikes at log(k) positions."""
-    N = int(N)
-    limit = int(N**0.5) + 1
-    log_N = np.log(N)
-    size = int(log_N * scale) + 30
-    x = np.arange(size)
-    signal = np.zeros(size)
 
-    spike_count = 0
-    for k in range(2, limit + 1):
-        center = np.log(k) * scale
-        idx = int(round(center))
-        if 0 <= idx < size:
-            signal[idx] += 1.0
-            spike_count += 1
-            if sigma > 0:
-                for offset in [-1, 1]:
-                    if 0 <= idx + offset < size:
-                        signal[idx + offset] += 0.3
+# ── Signal construction — hybrid dense / segmented-sieve ─────────────────────
+#
+# WHY TWO MODES:
+#
+# The convolution peak at log(N) does NOT come from the exact factor pair
+# (p, q) because q > √N is never in the signal.  It comes from near-miss
+# integer pairs (a, b) with a, b ≤ √N and a×b close enough to N to land
+# inside the detection window (≈ ±2 % of log-scale).
+#
+# With ALL INTEGERS in the signal, floor(√N) × ceil(√N) almost always
+# provides that near-miss pair.  With PRIMES ONLY the nearest prime-pair
+# product is much further away, and at small N (< ~2^32) it falls outside
+# the window entirely — giving peak = 0 and a false "prime" verdict.
+#
+# DENSE mode (N < 2^_SIEVE_BITS):
+#   Vectorised all-integers: arange(2, √N+1) → log → round → scatter-add.
+#   Correct for all N; √N fits trivially in memory at this size.
+#
+# SEGMENTED-SIEVE mode (N ≥ 2^_SIEVE_BITS):
+#   At large N (≥ 2^32, √N ≥ 65 K), the boolean array for a plain sieve
+#   grows toward gigabytes and falls out of cache.  The segmented sieve
+#   processes [2, √N] in strips of _SEG booleans (512 KB, L3-resident),
+#   emitting only primes.  At this scale the prime density is high enough
+#   (~1 / ln √N) that many prime pairs have product within the window.
+#
+#   Memory at any moment: O(N^1/4) seed array + O(_SEG) strip — constant
+#   regardless of N.
+
+_SEG        = 1 << 19   # 512 K strip  — comfortably fits in L3
+_SIEVE_BITS = 32        # transition: N < 2^32 → dense;  N ≥ 2^32 → sieve
+
+
+def _seed_sieve(n: int) -> np.ndarray:
+    """Primes up to n via plain Eratosthenes (seed phase only — O(N^1/4))."""
+    if n < 2:
+        return np.array([], dtype=np.int64)
+    s = np.ones(n + 1, dtype=bool)
+    s[0] = s[1] = False
+    for i in range(2, int(n ** 0.5) + 1):
+        if s[i]:
+            s[i * i :: i] = False
+    return np.nonzero(s)[0].astype(np.int64)
+
+
+def _dense_signal_indices(limit: int, scale: float, sig_size: int,
+                           segment_size: int = _SEG) -> tuple[np.ndarray, int]:
+    """
+    Signal indices for ALL integers in [2, limit], processed in chunks so
+    the working array stays bounded even for moderate limit values.
+    Returns (idx_array, count).
+    """
+    all_idx: list[np.ndarray] = []
+    low = 2
+    while low <= limit:
+        high = min(low + segment_size, limit + 1)
+        ks   = np.arange(low, high, dtype=np.float64)
+        idx  = np.rint(np.log(ks) * scale).astype(np.intp)
+        mask = (idx >= 0) & (idx < sig_size)
+        all_idx.append(idx[mask])
+        low = high
+    arr = np.concatenate(all_idx) if all_idx else np.array([], dtype=np.intp)
+    return arr, len(arr)
+
+
+def _sieve_signal_indices(limit: int, scale: float, sig_size: int,
+                           segment_size: int = _SEG) -> tuple[np.ndarray, int]:
+    """
+    Signal indices for PRIMES in [2, limit] via segmented Eratosthenes.
+    Memory: O(N^1/4) seed + O(segment_size) strip — never O(√N).
+    Returns (idx_array, prime_count).
+    """
+    sqrt_limit = int(limit ** 0.5) + 1
+    small      = _seed_sieve(sqrt_limit)          # ≈ N^(1/4) entries
+
+    all_idx: list[np.ndarray] = []
+    prime_count = 0
+    low = 2
+
+    while low <= limit:
+        high    = min(low + segment_size, limit + 1)
+        seg_len = high - low
+
+        strip = np.ones(seg_len, dtype=bool)
+        """
+        for p in small:
+            start = max(p * p, ((low + p - 1) // p) * p)
+            if start < high:
+                strip[start - low :: p] = False
+        """
+        starts = np.maximum(small * small, ((low + small - 1) // small) * small)
+        mask = starts < high
+        for p, s in zip(small[mask], starts[mask] - low):
+            strip[s :: p] = False
+
+        pos    = np.nonzero(strip)[0]
+        primes = (low + pos).astype(np.float64)
+        prime_count += len(primes)
+
+        if len(primes):
+            idx  = np.rint(np.log(primes) * scale).astype(np.intp)
+            mask = (idx >= 0) & (idx < sig_size)
+            all_idx.append(idx[mask])
+
+        low = high
+
+    arr = np.concatenate(all_idx) if all_idx else np.array([], dtype=np.intp)
+    return arr, prime_count
+
+
+def build_sharp_signal(N, scale, sigma=1.0, verbosity=1,
+                       segment_size: int = _SEG):
+    """
+    Build the log-domain spike signal.
+
+    Selects the construction strategy automatically:
+      • N <  2^_SIEVE_BITS → dense all-integers (correct for small N)
+      • N >= 2^_SIEVE_BITS → segmented primes-only sieve (cache-friendly for large N)
+    """
+    N     = int(N)
+    limit = int(N ** 0.5) + 1
+    log_N = np.log(N)
+    size  = int(log_N * scale) + 30
+
+    t0 = time.time() if verbosity >= 2 else 0.0
+
+    if N.bit_length() < _SIEVE_BITS:
+        idx_v, count = _dense_signal_indices(limit, scale, size, segment_size)
+        method = "dense-all"
+    else:
+        idx_v, count = _sieve_signal_indices(limit, scale, size, segment_size)
+        method = "seg-primes"
+
+    signal = np.zeros(size)
+    np.add.at(signal, idx_v, 1.0)
+    if sigma > 0:
+        np.add.at(signal, np.clip(idx_v - 1, 0, size - 1), 0.3)
+        np.add.at(signal, np.clip(idx_v + 1, 0, size - 1), 0.3)
 
     max_val = signal.max()
     if max_val > 0:
-        signal = signal / max_val
+        signal /= max_val
 
+    segs = math.ceil(limit / segment_size)
     vprint(verbosity, 2,
-           f"    [signal]  size={size}  spikes={spike_count}  "
-           f"limit=√N≈{limit}  log(N)={log_N:.4f}  max_pre_norm={max_val:.3f}")
+           f"    [signal]  method={method}  size={size}  count={count:,}  "
+           f"limit=√N≈{limit:,}  segments={segs}  seg={segment_size>>10}K  "
+           f"log(N)={log_N:.4f}  built_in={time.time()-t0:.4f}s")
     return signal, size, log_N
 
 
